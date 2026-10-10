@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "MicroDex - Sistema Red",
+  "short_name": "MicroDex",
+  "description": "Colecciona micros de Santiago, Valparaíso y todo Chile.",
+  "lang": "es-CL",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f7fc",
+  "theme_color": "#d62d38",
+  "icons": [
+    {
+      "src": "/icons/microdex-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/microdex-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
