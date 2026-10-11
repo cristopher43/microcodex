@@ -21,6 +21,10 @@ import VistaInicio from "./components/VistaInicio.jsx";
 import ToastLogro from "./components/ToastLogro.jsx";
 import Confeti from "./components/Confeti.jsx";
 import ModoPadres from "./components/ModoPadres.jsx";
+import VistaRecorridos from "./components/VistaRecorridos.jsx";
+import ModalAsignarRecorrido from "./components/ModalAsignarRecorrido.jsx";
+import { RECORRIDOS } from "./data/recorridos.js";
+import { useCapturasRecorridos } from "./hooks/useCapturasRecorridos.js";
 
 const FILTRO_INICIAL = { estado: "todas", tipo: "Todos", zona: "Todas", rareza: "Todas" };
 
@@ -47,10 +51,12 @@ export default function App() {
     limpiarError,
   } = useCapturas();
   const { obtenerUbicacion } = useUbicacion();
+  const { capturasRecorridos, cargandoRecorridos, errorRecorridos, registrarCapturaRecorrido, importarCapturasMicros, actualizarCoordenadasRecorrido, borrarCapturasRecorridos } = useCapturasRecorridos();
   const { activado: sonidoActivado, alternar: alternarSonido, sonar } = useSonido();
 
   const [pestañaActiva, setPestañaActiva] = useState("inicio");
   const [filtro, setFiltro] = useState(FILTRO_INICIAL);
+  const [vistaColeccion, setVistaColeccion] = useState("micros");
   const [mostrarIntro, setMostrarIntro] = useState(introPendiente);
   const [modoPadres, setModoPadres] = useState(false);
   const [escanerAbierto, setEscanerAbierto] = useState(false);
@@ -70,6 +76,10 @@ export default function App() {
     () => Object.fromEntries(capturas.map((captura) => [captura.busId, captura])),
     [capturas],
   );
+
+  useEffect(() => {
+    void importarCapturasMicros(capturas);
+  }, [capturas, importarCapturasMicros]);
 
   const terminarIntro = useCallback(() => {
     try {
@@ -92,7 +102,7 @@ export default function App() {
   }, [escanerTerminado, pendiente?.foto]);
 
   const iniciarCaptura = useCallback(
-    async (archivo) => {
+    async (archivo, recorrido = null) => {
       setAviso("");
       limpiarError();
       setAsignarAbierto(false);
@@ -100,7 +110,7 @@ export default function App() {
       setPendiente(null);
       setEscanerAbierto(true);
 
-      const registroTemporal = { foto: null, coordenadas: null };
+      const registroTemporal = { foto: null, coordenadas: null, recorrido };
       pendienteRef.current = registroTemporal;
 
       registroTemporal.ubicacionPromise = obtenerUbicacion()
@@ -133,17 +143,29 @@ export default function App() {
   }, []);
 
   const asignarBus = useCallback(
-    (bus, recorrido) => {
+    async (bus, recorrido) => {
       const registroTemporal = pendienteRef.current;
-      if (!registroTemporal?.foto) return;
+      if (!registroTemporal?.foto || !recorrido?.codigo) return;
       setGuardando(true);
       const nuevaCaptura = {
         busId: bus.id,
         foto: registroTemporal.foto,
         fecha: new Date().toISOString(),
         coordenadas: registroTemporal.coordenadas,
-        recorrido: recorrido || "",
+        recorrido: `${recorrido.codigo} · ${recorrido.descripcion}`,
       };
+
+      // La misma foto acredita tanto el modelo de micro como el servicio elegido.
+      const recorridoGuardado = await registrarCapturaRecorrido(
+        recorrido.id,
+        registroTemporal.foto,
+        nuevaCaptura.fecha,
+        nuevaCaptura.coordenadas,
+      );
+      if (!recorridoGuardado) {
+        setGuardando(false);
+        return;
+      }
 
       const guardada = registrarCaptura(nuevaCaptura);
       if (!guardada) {
@@ -186,9 +208,33 @@ export default function App() {
       setPendiente(null);
       pendienteRef.current = null;
       setPestañaActiva("coleccion");
+      setVistaColeccion("recorridos");
     },
-    [actualizarCoordenadas, capturas, desbloquearLogros, registrarCaptura, sonar],
+    [actualizarCoordenadas, capturas, desbloquearLogros, registrarCaptura, registrarCapturaRecorrido, sonar],
   );
+
+  const asignarRecorrido = useCallback(async () => {
+    const registro = pendienteRef.current;
+    const ruta = registro?.recorrido;
+    if (!registro?.foto || !ruta || guardando) return;
+    setGuardando(true);
+    const fecha = new Date().toISOString();
+    const guardada = await registrarCapturaRecorrido(ruta.id, registro.foto, fecha, registro.coordenadas);
+    if (!guardada) { setGuardando(false); return; }
+    if (!registro.coordenadas && registro.ubicacionPromise) {
+      registro.ubicacionPromise.then((coordenadas) => coordenadas && actualizarCoordenadasRecorrido(ruta.id, fecha, coordenadas));
+    }
+    sonar("exito");
+    if ("vibrate" in navigator) navigator.vibrate(45);
+    setAviso(`¡Recorrido ${ruta.codigo} agregado a tu Pokédex!`);
+    setGuardando(false);
+    setAsignarAbierto(false);
+    setEscanerTerminado(false);
+    setPendiente(null);
+    pendienteRef.current = null;
+    setPestañaActiva("coleccion");
+    setVistaColeccion("recorridos");
+  }, [actualizarCoordenadasRecorrido, guardando, registrarCapturaRecorrido, sonar]);
 
   const cancelarAsignacion = useCallback(() => {
     pendienteRef.current = null;
@@ -266,13 +312,15 @@ export default function App() {
     [restaurarDatos],
   );
 
-  const borrarTodoConfirmado = useCallback(() => {
+  const borrarTodoConfirmado = useCallback(async () => {
     const correcto = borrarTodo();
     if (correcto) {
+      const rutasBorradas = await borrarCapturasRecorridos();
+      if (!rutasBorradas) { setAviso("Se borraron las micros, pero no se pudieron borrar todas las fotos de recorridos."); return; }
       setAviso("Colección borrada.");
       setModoPadres(false);
     }
-  }, [borrarTodo]);
+  }, [borrarCapturasRecorridos, borrarTodo]);
 
   return (
     <div className="app-shell min-h-screen">
@@ -312,6 +360,11 @@ export default function App() {
                 <p className="eyebrow">Tu álbum</p>
                 <h2 id="titulo-coleccion" className="titulo-seccion">Colección</h2>
               </div>
+              <div className="coleccion-vistas" role="tablist" aria-label="Tipo de colección">
+                <button type="button" role="tab" aria-selected={vistaColeccion === "micros"} className={vistaColeccion === "micros" ? "coleccion-vista-activa" : ""} onClick={() => setVistaColeccion("micros")}>Micros <span>{capturas.length}/{BUSES.length}</span></button>
+                <button type="button" role="tab" aria-selected={vistaColeccion === "recorridos"} className={vistaColeccion === "recorridos" ? "coleccion-vista-activa" : ""} onClick={() => setVistaColeccion("recorridos")}>Recorridos <span>{capturasRecorridos.length}/{RECORRIDOS.length}</span></button>
+              </div>
+              {vistaColeccion === "micros" ? <>
               <div className="resumen-coleccion">
                 <div className="resumen-coleccion-cabecera">
                   <strong>{capturas.length} <span>/ {BUSES.length} micros</span></strong>
@@ -329,6 +382,7 @@ export default function App() {
                 modoPadres={modoPadres}
                 onAbrir={abrirDetalle}
               />
+              </> : <VistaRecorridos recorridos={RECORRIDOS} capturas={capturasRecorridos} cargando={cargandoRecorridos} error={errorRecorridos} onCapturar={iniciarCaptura} />}
             </section>
           )}
           {pestañaActiva === "inicio" && (
@@ -358,7 +412,7 @@ export default function App() {
 
       <div className="barra-inferior-fija">
         <div className="barra-inferior-interior mx-auto w-full max-w-6xl">
-          {pestañaActiva !== "inicio" && (
+          {pestañaActiva !== "inicio" && !(pestañaActiva === "coleccion" && vistaColeccion === "recorridos") && (
             <div className="barra-accion-camara">
               <BotonCamara
                 bloqueado={capturas.length >= BUSES.length}
@@ -379,13 +433,14 @@ export default function App() {
         />
       )}
       {asignarAbierto && pendiente?.foto && (
+        pendiente.recorrido ? <ModalAsignarRecorrido foto={pendiente.foto} recorrido={pendiente.recorrido} guardando={guardando} error={errorRecorridos} onGuardar={asignarRecorrido} onCancelar={cancelarAsignacion} /> :
         <ModalAsignar
           foto={pendiente.foto}
           busesDisponibles={busesDisponibles}
           onAsignar={asignarBus}
           onCancelar={cancelarAsignacion}
           guardando={guardando}
-          errorAlmacenamiento={errorAlmacenamiento}
+          errorAlmacenamiento={errorAlmacenamiento || errorRecorridos}
           modoPadres={modoPadres}
         />
       )}
